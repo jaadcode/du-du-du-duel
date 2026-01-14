@@ -26,11 +26,12 @@ class DuelView(discord.ui.View):
         self.challenged = challenged
         self.timeout_minutes = timeout_minutes
         self.accepted = False
+        self.refused = False
         
     @discord.ui.button(label="Accepter le duel", style=discord.ButtonStyle.danger, emoji="⚔️")
     async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.challenged.id:
-            await interaction.response.send_message("Tu attaques ta propre race ?", ephemeral=True)
+            await interaction.response.send_message("C'est pas ton moment gamin", ephemeral=True)
             return
             
         self.accepted = True
@@ -66,6 +67,16 @@ class DuelView(discord.ui.View):
                 print(f"[DEBUG] Neither player is in a voice channel")
         except Exception as e:
             print(f"[DEBUG] Error playing sound: {e}")
+    
+    @discord.ui.button(label="Refuser", style=discord.ButtonStyle.secondary, emoji="❌")
+    async def refuse_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.challenged.id:
+            await interaction.response.send_message("Seul le challengé peut refuser !", ephemeral=True)
+            return
+        
+        self.refused = True
+        self.stop()
+        await interaction.response.send_message(f"❌ {self.challenged.mention} a refusé le duel, bébé cadum ! 🐔")
 
 class RevengeView(discord.ui.View):
     def __init__(self, loser, winner, timeout_minutes, guild):
@@ -75,6 +86,7 @@ class RevengeView(discord.ui.View):
         self.timeout_minutes = timeout_minutes
         self.guild = guild
         self.revenge_requested = False
+        self.abandoned = False
         
     @discord.ui.button(label="Revanche ! (Double or Nothing)", style=discord.ButtonStyle.danger, emoji="🔥")
     async def revenge_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -121,6 +133,28 @@ class RevengeView(discord.ui.View):
             except discord.Forbidden:
                 await interaction.followup.send(f"{self.winner.mention} a refusé la revanche mais je ne peux pas timeout {self.loser.mention}.")
                 print(f"[DEBUG] Failed to timeout {self.loser.name} - missing permissions")
+    
+    @discord.ui.button(label="Abandonner", style=discord.ButtonStyle.secondary, emoji="🏳️")
+    async def abandon_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.loser.id:
+            await interaction.response.send_message("Seul le perdant peut abandonner !", ephemeral=True)
+            return
+        
+        self.abandoned = True
+        self.stop()
+        
+        # Disable the button
+        button.disabled = True
+        await interaction.response.edit_message(view=self)
+        
+        # Apply timeout
+        try:
+            await self.loser.timeout(timedelta(minutes=self.timeout_minutes), reason=f"A perdu contre {self.winner.display_name}")
+            await interaction.followup.send(f"{self.loser.mention} accepte sa défaite. Timeout de {self.timeout_minutes} minute(s) appliqué. 👋")
+            print(f"[DEBUG] {self.loser.name} abandoned (accepted defeat)")
+        except discord.Forbidden:
+            await interaction.followup.send(f"{self.loser.mention} accepte sa défaite mais je ne peux pas le timeout.")
+            print(f"[DEBUG] Failed to timeout {self.loser.name} - missing permissions")
 
 class AcceptRevengeView(discord.ui.View):
     def __init__(self, challenger, challenged):
@@ -391,8 +425,8 @@ async def duel(interaction: discord.Interaction, opponent: discord.Member, timeo
     await interaction.response.send_message(
         f"⚔️ **DUEL CHALLENGE** ⚔️\n"
         f"{interaction.user.mention} défie {opponent.mention} à un duel de Pierre-Papier-Ciseaux!\n"
-        f"**Stakes:** Le perdant se fait timeout pour **{timeout} minute(s)**\n"
-        f"**Format:** Best of 3",
+        f"**Enjeu:** Le perdant se fait timeout pour **{timeout} minute(s)**\n"
+        f"**Format:** BO3",
         view=view
     )
     
@@ -400,9 +434,16 @@ async def duel(interaction: discord.Interaction, opponent: discord.Member, timeo
     print(f"[DEBUG] Waiting for {opponent.name} to accept the duel...")
     await view.wait()
     
+    if view.refused:
+        print(f"[DEBUG] {opponent.name} refused the duel")
+        await interaction.followup.send(f"{opponent.mention} a refusé le duel, bébé cadum ! 🐔")
+        del active_duels[interaction.user.id]
+        del active_duels[opponent.id]
+        return
+    
     if not view.accepted:
-        print(f"[DEBUG] {opponent.name} didn't accept the duel")
-        await interaction.followup.send(f"{opponent.mention} n'a pas accepté le duel, bébé cadum !")
+        print(f"[DEBUG] {opponent.name} didn't accept the duel (timeout)")
+        await interaction.followup.send(f"{opponent.mention} n'a pas répondu au duel, bébé cadum !")
         del active_duels[interaction.user.id]
         del active_duels[opponent.id]
         return
