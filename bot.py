@@ -88,7 +88,7 @@ class RevengeView(discord.ui.View):
         self.revenge_requested = False
         self.abandoned = False
         
-    @discord.ui.button(label="Revanche ! (Double or Nothing)", style=discord.ButtonStyle.danger, emoji="🔥")
+    @discord.ui.button(label="Revanche ! (Quitte ou double)", style=discord.ButtonStyle.danger, emoji="🔥")
     async def revenge_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.loser.id:
             await interaction.response.send_message("Seul le perdant peut demander une revanche !", ephemeral=True)
