@@ -107,7 +107,7 @@ class RevengeView(discord.ui.View):
         accept_view = AcceptRevengeView(self.loser, self.winner)
         await interaction.followup.send(
             f"💀 **{self.loser.mention} demande une REVANCHE !**\n"
-            f"🔥 **Double or Nothing** : Le perdant prendra **{doubled_timeout} minutes** de timeout !\n"
+            f"🔥 **Quitte ou Double** : Le perdant prendra **{doubled_timeout} minutes** de timeout !\n"
             f"{self.winner.mention}, acceptes-tu ?",
             view=accept_view
         )
