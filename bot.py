@@ -47,11 +47,12 @@ class RPSButton(discord.ui.Button):
 
 class RPSView(discord.ui.View):
     def __init__(self, player1, player2, round_num):
-        super().__init__(timeout=30)
+        super().__init__(timeout=None)  # No timeout - we'll handle it manually if needed
         self.player1 = player1
         self.player2 = player2
         self.round_num = round_num
         self.choices = {}
+        print(f"[DEBUG] RPSView created for round {round_num}")
         
         # Add buttons
         self.add_item(RPSButton("Pierre", "🪨"))
@@ -129,7 +130,7 @@ async def duel(interaction: discord.Interaction, opponent: discord.Member, timeo
     active_duels[interaction.user.id] = True
     active_duels[opponent.id] = True
     
-    # Send challenge (PUBLIC)
+    # Send challenge
     view = DuelView(interaction.user, opponent, timeout)
     await interaction.response.send_message(
         f"⚔️ **DUEL CHALLENGE** ⚔️\n"
@@ -150,27 +151,76 @@ async def duel(interaction: discord.Interaction, opponent: discord.Member, timeo
         del active_duels[opponent.id]
         return
     
-    print(f"[DEBUG] Duel accepted! Starting game between {player1.name} and {opponent.name}")
+    print(f"[DEBUG] Duel accepted! Starting game between {interaction.user.name} and {opponent.name}")
     
     # Start the duel
     player1 = interaction.user
     player2 = opponent
     scores = {player1.id: 0, player2.id: 0}
+    round_num = 1
     
-    # Store messages to track the conversation
-    round_messages = []
-    
-    for round_num in range(1, 4):
+    while round_num <= 3:
+        print(f"[DEBUG] === Starting round {round_num} ===")
+        
         if scores[player1.id] == 2 or scores[player2.id] == 2:
+            print(f"[DEBUG] Game over! Score: {scores[player1.id]}-{scores[player2.id]}")
             break
         
-        # Create RPS view for this round
+        # Create RPS view for THIS round only
         rps_view = RPSView(player1, player2, round_num)
+        
+        print(f"[DEBUG] Sending round message with buttons...")
         round_msg = await interaction.followup.send(
-            f"**🎮 ROUND {round_num} 🎮**\n{player1.mention} {player2.mention}\nChoisis ton coup",
+            f"**🎮 ROUND {round_num} 🎮**\nChoisis ton coup",
             view=rps_view
         )
-        round_messages.append(round_msg
+        print(f"[DEBUG] Round message sent. Now waiting for players...")
+        
+        # Wait for both players to choose
+        await rps_view.wait()
+        print(f"[DEBUG] View.wait() completed!")
+        
+        print(f"[DEBUG] Choices received: {len(rps_view.choices)} out of 2")
+        
+        if len(rps_view.choices) != 2:
+            print(f"[DEBUG] Not enough choices - canceling duel")
+            await interaction.followup.send("⏰ Trop tard, duel reporté")
+            del active_duels[player1.id]
+            del active_duels[player2.id]
+            return
+        
+        # Determine round winner
+        p1_choice = rps_view.choices[player1.id]
+        p2_choice = rps_view.choices[player2.id]
+        
+        print(f"[DEBUG] {player1.name} chose {p1_choice}, {player2.name} chose {p2_choice}")
+        
+        result = determine_winner(p1_choice, p2_choice)
+        
+        result_text = f"{player1.mention} a choisi {p1_choice}\n{player2.mention} a choisi {p2_choice}\n\n"
+        
+        if result == 0:
+            result_text += "**Egalité !**"
+            print(f"[DEBUG] Round {round_num} - TIE! Replaying same round")
+            # Don't increment round_num on tie
+        elif result == 1:
+            scores[player1.id] += 1
+            result_text += f"**{player1.mention} gagne ce round !**"
+            print(f"[DEBUG] Round {round_num} - {player1.name} wins! Score: {scores[player1.id]}-{scores[player2.id]}")
+            round_num += 1
+        else:
+            scores[player2.id] += 1
+            result_text += f"**{player2.mention} gagne ce round !**"
+            print(f"[DEBUG] Round {round_num} - {player2.name} wins! Score: {scores[player1.id]}-{scores[player2.id]}")
+            round_num += 1
+        
+        result_text += f"\n\n**Score: {player1.display_name} {scores[player1.id]} - {scores[player2.id]} {player2.display_name}**"
+        
+        await interaction.followup.send(result_text)
+        print(f"[DEBUG] Result sent. Waiting 2 seconds before next round...")
+        await asyncio.sleep(2)
+    
+    print(f"[DEBUG] All rounds completed. Final score: {scores[player1.id]}-{scores[player2.id]}")
     
     # Determine overall winner
     if scores[player1.id] > scores[player2.id]:
@@ -180,7 +230,9 @@ async def duel(interaction: discord.Interaction, opponent: discord.Member, timeo
         winner = player2
         loser = player1
     
-    # Timeout the loser and announce PUBLIC result
+    print(f"[DEBUG] Winner: {winner.name}, Loser: {loser.name}")
+    
+    # Timeout the loser
     try:
         await loser.timeout(timedelta(minutes=timeout), reason=f"A perdu contre {winner.display_name}")
         await interaction.followup.send(
@@ -188,16 +240,19 @@ async def duel(interaction: discord.Interaction, opponent: discord.Member, timeo
             f"💀 {loser.mention} a été timeout pour **{timeout} minute(s)**!\n"
             f"C'est ciao ! 👋"
         )
+        print(f"[DEBUG] {loser.name} timed out successfully")
     except discord.Forbidden:
         await interaction.followup.send(
             f"🏆 **{winner.mention} GAGNE LE DUEL!** 🏆\n\n"
             f"⚠️ Mais je peux pas le ban, oupsi {loser.mention}. "
             f"Faut me mettre les perms"
         )
+        print(f"[DEBUG] Failed to timeout {loser.name} - missing permissions")
     
     # Clean up
     del active_duels[player1.id]
     del active_duels[player2.id]
+    print(f"[DEBUG] Duel completed and cleaned up")
 
 # Run the bot
 # Get token from environment variable
