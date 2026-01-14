@@ -36,6 +36,44 @@ class DuelView(discord.ui.View):
         self.accepted = True
         self.stop()
         await interaction.response.send_message(f"**DU-DU-DU-DUEL!** {self.challenged.mention} a accepté!", ephemeral=False)
+        
+        # Try to play the duel sound if players are in voice
+        try:
+            # Check if challenger is in a voice channel
+            challenger_voice = self.challenger.voice
+            challenged_voice = self.challenged.voice
+            
+            voice_channel = None
+            if challenger_voice and challenger_voice.channel:
+                voice_channel = challenger_voice.channel
+                print(f"[DEBUG] Challenger is in voice channel: {voice_channel.name}")
+            elif challenged_voice and challenged_voice.channel:
+                voice_channel = challenged_voice.channel
+                print(f"[DEBUG] Challenged is in voice channel: {voice_channel.name}")
+            
+            if voice_channel:
+                print(f"[DEBUG] Attempting to join voice channel and play sound...")
+                # Connect to voice channel
+                voice_client = await voice_channel.connect()
+                
+                # Play the duel sound
+                audio_source = discord.FFmpegPCMAudio('du-du-du-duel.mp3')
+                voice_client.play(audio_source)
+                
+                # Wait for audio to finish playing
+                while voice_client.is_playing():
+                    await asyncio.sleep(0.1)
+                
+                # Add extra buffer time to ensure audio fully completes
+                await asyncio.sleep(6)
+                
+                # Disconnect after playing
+                await voice_client.disconnect()
+                print(f"[DEBUG] Sound played successfully!")
+            else:
+                print(f"[DEBUG] Neither player is in a voice channel")
+        except Exception as e:
+            print(f"[DEBUG] Error playing sound: {e}")
 
 class RPSButton(discord.ui.Button):
     def __init__(self, choice: str, emoji: str):
