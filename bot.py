@@ -19,6 +19,34 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # Game state storage
 active_duels = {}
 
+class ConfirmHighStakesView(discord.ui.View):
+    def __init__(self, challenger, challenged, timeout_minutes):
+        super().__init__(timeout=30)
+        self.challenger = challenger
+        self.challenged = challenged
+        self.timeout_minutes = timeout_minutes
+        self.confirmed = False
+        
+    @discord.ui.button(label="OUI, je confirme !", style=discord.ButtonStyle.danger, emoji="⚠️")
+    async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.challenged.id:
+            await interaction.response.send_message("C'est pas ton moment gamin", ephemeral=True)
+            return
+        
+        self.confirmed = True
+        self.stop()
+        await interaction.response.send_message(f"✅ {self.challenged.mention} a confirmé ! Le duel va commencer...")
+    
+    @discord.ui.button(label="Non, annuler", style=discord.ButtonStyle.secondary, emoji="❌")
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.challenged.id:
+            await interaction.response.send_message("Seul le challengé peut annuler !", ephemeral=True)
+            return
+        
+        self.confirmed = False
+        self.stop()
+        await interaction.response.send_message(f"❌ {self.challenged.mention} a annulé le duel.")
+
 class DuelView(discord.ui.View):
     def __init__(self, challenger, challenged, timeout_minutes):
         super().__init__(timeout=60)
@@ -33,10 +61,36 @@ class DuelView(discord.ui.View):
         if interaction.user.id != self.challenged.id:
             await interaction.response.send_message("C'est pas ton moment gamin", ephemeral=True)
             return
+        
+        # Check if timeout is more than 2 hours (120 minutes)
+        if self.timeout_minutes > 120:
+            # Ask for confirmation
+            confirm_view = ConfirmHighStakesView(self.challenger, self.challenged, self.timeout_minutes)
+            await interaction.response.send_message(
+                f"⚠️ **ATTENTION {self.challenged.mention} !**\n"
+                f"Le timeout est de **{self.timeout_minutes} minutes** ({self.timeout_minutes // 60}h{self.timeout_minutes % 60}min) !\n"
+                f"Es-tu SÛR d'accepter ??",
+                view=confirm_view,
+                ephemeral=False
+            )
+            
+            # Wait for confirmation
+            await confirm_view.wait()
+            
+            if not confirm_view.confirmed:
+                self.refused = True
+                self.stop()
+                return
             
         self.accepted = True
         self.stop()
-        await interaction.response.send_message(f"**DU-DU-DU-DUEL!** {self.challenged.mention} a accepté!", ephemeral=False)
+        
+        # Send acceptance message if not already sent
+        if self.timeout_minutes <= 120:
+            await interaction.response.send_message(f"**DU-DU-DU-DUEL!** {self.challenged.mention} a accepté!", ephemeral=False)
+        else:
+            # Already responded with confirmation message
+            await interaction.followup.send(f"**DU-DU-DU-DUEL!** {self.challenged.mention} a accepté!", ephemeral=False)
         
         # Try to play the duel sound if players are in voice
         try:
@@ -55,6 +109,7 @@ class DuelView(discord.ui.View):
                 print(f"[DEBUG] Attempting to join voice channel and play sound...")
                 voice_client = await voice_channel.connect()
                 audio_source = discord.FFmpegPCMAudio('du-du-du-duel.mp3')
+                audio_source = discord.PCMVolumeTransformer(audio_source, volume=0.07)
                 voice_client.play(audio_source)
                 
                 while voice_client.is_playing():
@@ -126,12 +181,13 @@ class RevengeView(discord.ui.View):
             await start_duel_game(interaction, self.loser, self.winner, doubled_timeout, is_revenge=True)
         else:
             # Revenge refused, apply original timeout
+            # Message already sent by the button, just apply timeout
             try:
                 await self.loser.timeout(timedelta(minutes=self.timeout_minutes), reason=f"A perdu contre {self.winner.display_name}")
-                await interaction.followup.send(f"{self.winner.mention} a refusé la revanche. {self.loser.mention} reste timeout pour {self.timeout_minutes} minute(s). 👋")
+                await interaction.followup.send(f"{self.loser.mention} reste timeout pour {self.timeout_minutes} minute(s). 👋")
                 print(f"[DEBUG] {self.loser.name} timed out (revenge refused)")
             except discord.Forbidden:
-                await interaction.followup.send(f"{self.winner.mention} a refusé la revanche mais je ne peux pas timeout {self.loser.mention}.")
+                await interaction.followup.send(f"Je ne peux pas timeout {self.loser.mention}.")
                 print(f"[DEBUG] Failed to timeout {self.loser.name} - missing permissions")
     
     @discord.ui.button(label="Abandonner", style=discord.ButtonStyle.secondary, emoji="🏳️")
@@ -436,7 +492,7 @@ async def duel(interaction: discord.Interaction, opponent: discord.Member, timeo
     
     if view.refused:
         print(f"[DEBUG] {opponent.name} refused the duel")
-        await interaction.followup.send(f"{opponent.mention} a refusé le duel, bébé cadum ! 🐔")
+        # Message already sent by the button, don't send another one
         del active_duels[interaction.user.id]
         del active_duels[opponent.id]
         return
