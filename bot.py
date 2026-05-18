@@ -49,7 +49,7 @@ class ConfirmHighStakesView(discord.ui.View):
 
 class DuelView(discord.ui.View):
     def __init__(self, challenger, challenged, timeout_minutes):
-        super().__init__(timeout=60)
+        super().__init__(timeout=300)  # 5 minutes - le challenger peut annuler s'il veut arrêter avant
         self.challenger = challenger
         self.challenged = challenged
         self.timeout_minutes = timeout_minutes
