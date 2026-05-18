@@ -70,7 +70,7 @@ class MinesweeperView(discord.ui.View):
         if btn is None:
             return
         adj = self.adjacency.get((row, col), 0)
-        btn.label = str(adj) if adj > 0 else "　"
+        btn.label = str(adj) if adj > 0 else "·"
         btn.style = discord.ButtonStyle.secondary
         btn.disabled = True
 
@@ -85,7 +85,7 @@ class MinesweeperView(discord.ui.View):
                 item.label = "💥" if (r, c) == hit_mine else "💣"
             elif (r, c) in self.revealed:
                 adj = self.adjacency.get((r, c), 0)
-                item.label = str(adj) if adj > 0 else "　"
+                item.label = str(adj) if adj > 0 else "·"
                 item.style = discord.ButtonStyle.secondary
             item.disabled = True
 
@@ -316,8 +316,10 @@ async def start_minesweeper_game(
                     f"⚠️ Je peux pas timeout {loser.mention}. Faut me mettre les perms."
                 )
 
-    del active_duels[player1.id]
-    del active_duels[player2.id]
+    if player1.id in active_duels:
+        del active_duels[player1.id]
+    if player2.id in active_duels:
+        del active_duels[player2.id]
     print("[DEBUG] Minesweeper cleaned up")
 
 
