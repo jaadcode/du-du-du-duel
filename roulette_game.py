@@ -50,103 +50,209 @@ class RouletteJoinView(discord.ui.View):
         self.stop()
 
 
-class RouletteTriggerView(discord.ui.View):
-    def __init__(self, player):
-        super().__init__(timeout=30)
-        self.player = player
-        self.triggered = False
+class RouletteGameView(discord.ui.View):
+    """Vue principale d'un tour : le joueur courant choisit sa cible."""
 
-    @discord.ui.button(label="Appuyer sur la gâchette", style=discord.ButtonStyle.danger, emoji="🔫")
-    async def trigger_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.player.id:
+    def __init__(self, current_player, all_players):
+        super().__init__(timeout=60)
+        self.current_player = current_player
+        self.all_players = all_players
+        self.action = None   # "self" ou "other"
+        self.target = None
+
+    @discord.ui.button(label="Se tirer dessus", style=discord.ButtonStyle.danger, emoji="🔫", row=0)
+    async def shoot_self_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.current_player.id:
+            await interaction.response.send_message("C'est pas ton tour !", ephemeral=True)
+            return
+        self.action = "self"
+        self.stop()
+        await interaction.response.defer()
+
+    @discord.ui.button(label="Tirer sur quelqu'un", style=discord.ButtonStyle.secondary, emoji="🎯", row=0)
+    async def shoot_other_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.current_player.id:
             await interaction.response.send_message("C'est pas ton tour !", ephemeral=True)
             return
 
-        self.triggered = True
-        self.stop()
-        await interaction.response.defer()
+        others = [p for p in self.all_players if p.id != self.current_player.id]
+        target_view = RouletteTargetView(self.current_player, others)
+        await interaction.response.send_message(
+            "🎯 Qui vises-tu ?",
+            view=target_view,
+            ephemeral=True,
+        )
+
+        await target_view.wait()
+
+        if target_view.selected is not None:
+            self.action = "other"
+            self.target = target_view.selected
+            self.stop()
 
     async def on_timeout(self):
         self.stop()
 
 
+class RouletteTargetSelect(discord.ui.Select):
+    def __init__(self, shooter, targets):
+        self.shooter = shooter
+        self.targets_map = {str(t.id): t for t in targets}
+        options = [
+            discord.SelectOption(label=t.display_name, value=str(t.id))
+            for t in targets
+        ]
+        super().__init__(placeholder="Choisir une cible...", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.shooter.id:
+            await interaction.response.send_message("C'est pas ton tour !", ephemeral=True)
+            return
+        self.view.selected = self.targets_map[self.values[0]]
+        self.view.stop()
+        await interaction.response.defer()
+
+
+class RouletteTargetView(discord.ui.View):
+    def __init__(self, shooter, targets):
+        super().__init__(timeout=30)
+        self.selected = None
+        self.add_item(RouletteTargetSelect(shooter, targets))
+
+    async def on_timeout(self):
+        self.stop()
+
+
+def _cylinder_display(shots_fired: int) -> str:
+    """💨 = chambre vide (déjà tirée), 🔘 = chambre restante."""
+    return "💨" * shots_fired + "🔘" * (6 - shots_fired)
+
+
+async def _apply_death(interaction, victim, timeout_minutes):
+    await interaction.followup.send(
+        f"💥 **BANG !!** 💥\n\n"
+        f"💀 {victim.mention} a pris la balle !\n"
+        f"Timeout de **{timeout_minutes} minute(s)** appliqué... RIP 👋"
+    )
+    try:
+        await victim.timeout(timedelta(minutes=timeout_minutes), reason="Éliminé à la Roulette Russe")
+        print(f"[DEBUG] {victim.name} timed out via Russian Roulette")
+    except discord.Forbidden:
+        await interaction.followup.send(f"⚠️ Je peux pas timeout {victim.mention}, faut me donner les perms.")
+        print(f"[DEBUG] Failed to timeout {victim.name} - missing permissions")
+
+
 async def start_roulette_game(interaction, organizer, joined: dict, timeout_minutes: int):
     players = list(joined.values())
-    random.shuffle(players)
 
     for p in players:
         active_duels[p.id] = True
 
-    order_text = " → ".join(p.mention for p in players)
+    current_player = random.choice(players)
+    shots_fired = 0  # probabilité du prochain tir = 1 / (6 - shots_fired)
+
+    player_list = " | ".join(p.mention for p in players)
     await interaction.followup.send(
         f"🔫 **LA ROULETTE RUSSE COMMENCE !** 🔫\n\n"
-        f"**Joueurs :** {order_text}\n"
-        f"**Ordre aléatoire :** {order_text}\n"
-        f"**Risque :** 1 chance sur 6 à chaque tour (probabilité fixe)\n"
-        f"**Sanction :** Timeout de **{timeout_minutes} minute(s)** pour le perdant\n\n"
-        f"Que le meilleur survive... 💀"
+        f"**Joueurs :** {player_list}\n"
+        f"**Timeout du perdant :** {timeout_minutes} minute(s)\n\n"
+        f"Le revolver a **6 chambres**, une seule balle.\n"
+        f"Plus on survit, plus le risque augmente.\n\n"
+        f"Le premier joueur désigné est... {current_player.mention} ! 🎯"
     )
 
     await asyncio.sleep(3)
 
     victim = None
-    rounds_played = 0
-    max_rounds = 25  # safety valve, statistically almost impossible to reach
 
-    while victim is None and rounds_played < max_rounds:
-        rounds_played += 1
-        for player in players:
-            trigger_view = RouletteTriggerView(player)
-            msg = await interaction.followup.send(
-                f"🎯 **{player.mention}**, c'est ton tour...\n"
-                f"Prends le revolver et appuie sur la gâchette.",
-                view=trigger_view
+    while victim is None:
+        remaining = 6 - shots_fired
+        is_last = remaining == 1
+
+        if is_last:
+            await interaction.followup.send(
+                f"☠️ **DERNIÈRE CHAMBRE.** La balle est forcément là... quelqu'un va mourir."
             )
+            await asyncio.sleep(2)
 
-            await trigger_view.wait()
+        game_view = RouletteGameView(current_player, players)
+        msg = await interaction.followup.send(
+            f"**Barillet :** {_cylinder_display(shots_fired)}\n"
+            f"🎯 **{current_player.mention}**, c'est ton tour !\n"
+            f"Probabilité : **1/{remaining}**{'  ☠️' if is_last else ''}\n\n"
+            f"Que fais-tu ?",
+            view=game_view,
+        )
 
-            try:
-                await msg.delete()
-            except Exception:
-                pass
+        await game_view.wait()
 
-            shot = random.randint(1, 6) == 1
+        # Message de suspense (enlève les boutons, crée de la tension)
+        if game_view.action is None or game_view.action == "self":
+            suspense = f"🔫 *{current_player.display_name} appuie sur la gâchette...*"
+        else:
+            suspense = f"🎯 *{current_player.display_name} vise...*"
 
-            if shot:
-                victim = player
-                await interaction.followup.send(
-                    f"💥 **BANG !!** 💥\n\n"
-                    f"💀 {player.mention} a pris la balle !\n"
-                    f"Timeout de **{timeout_minutes} minute(s)** appliqué... RIP 👋"
-                )
-                try:
-                    await player.timeout(
-                        timedelta(minutes=timeout_minutes),
-                        reason="Éliminé à la Roulette Russe"
-                    )
-                    print(f"[DEBUG] {player.name} timed out via Russian Roulette")
-                except discord.Forbidden:
-                    await interaction.followup.send(
-                        f"⚠️ Je peux pas timeout {player.mention}, faut me donner les perms."
-                    )
-                    print(f"[DEBUG] Failed to timeout {player.name} - missing permissions")
-                break
+        try:
+            await msg.edit(content=suspense, view=None)
+        except Exception:
+            pass
+
+        await asyncio.sleep(1.5)
+
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+
+        # Timeout → tir forcé sur soi
+        if game_view.action is None:
+            await interaction.followup.send(
+                f"⏰ {current_player.mention} hésite trop... **le revolver part tout seul !**"
+            )
+            game_view.action = "self"
+
+        shots_fired += 1
+        hit = random.randint(1, remaining) == 1
+
+        if shots_fired < 6:
+            next_prob = f"**1/{6 - shots_fired}**"
+        else:
+            next_prob = "**1/1** ☠️ (mort certaine)"
+
+        if game_view.action == "self":
+            if hit:
+                victim = current_player
+                await _apply_death(interaction, victim, timeout_minutes)
             else:
                 await interaction.followup.send(
-                    f"*click* 😮‍💨 {player.mention} a survécu... pour cette fois."
+                    f"*click* 😮‍💨 {current_player.mention} a survécu...\n"
+                    f"{_cylinder_display(shots_fired)}  →  prochain tir : {next_prob}"
                 )
                 await asyncio.sleep(1.5)
 
-    if victim is None:
-        await interaction.followup.send(
-            "🍀 Personne n'est mort après tous ces tours... la balle a disparu ?"
-        )
+        else:  # "other"
+            target = game_view.target
+            if hit:
+                victim = target
+                await interaction.followup.send(
+                    f"💥 **{current_player.mention}** tire sur **{target.mention}** !"
+                )
+                await asyncio.sleep(1)
+                await _apply_death(interaction, victim, timeout_minutes)
+            else:
+                await interaction.followup.send(
+                    f"*click* 😮‍💨 **{current_player.mention}** tire sur **{target.mention}**... et le rate !\n"
+                    f"{_cylinder_display(shots_fired)}  →  prochain tir : {next_prob}\n"
+                    f"C'est maintenant au tour de {target.mention} 🎯"
+                )
+                await asyncio.sleep(1.5)
+                current_player = target
 
     for p in players:
         if p.id in active_duels:
             del active_duels[p.id]
 
-    print(f"[DEBUG] Russian Roulette done. Victim: {victim.name if victim else 'None'}")
+    print(f"[DEBUG] Russian Roulette done. Victim: {victim.name}")
 
 
 class RouletteTimeoutModal(discord.ui.Modal, title="🔫 Timeout du perdant"):
