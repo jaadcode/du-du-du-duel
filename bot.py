@@ -55,6 +55,7 @@ class DuelView(discord.ui.View):
         self.timeout_minutes = timeout_minutes
         self.accepted = False
         self.refused = False
+        self.cancelled = False
         
     @discord.ui.button(label="Accepter le duel", style=discord.ButtonStyle.danger, emoji="⚔️")
     async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -93,6 +94,10 @@ class DuelView(discord.ui.View):
             await interaction.followup.send(f"**DU-DU-DU-DUEL!** {self.challenged.mention} a accepté!", ephemeral=False)
         
         # Try to play the duel sound if players are in voice
+        await self.play_duel_sound()
+    
+    async def play_duel_sound(self):
+        """Play the duel sound in voice channel"""
         try:
             challenger_voice = self.challenger.voice
             challenged_voice = self.challenged.voice
@@ -107,9 +112,26 @@ class DuelView(discord.ui.View):
             
             if voice_channel:
                 print(f"[DEBUG] Attempting to join voice channel and play sound...")
-                voice_client = await voice_channel.connect()
+                
+                # Check if bot is already connected to a voice channel in this guild
+                voice_client = discord.utils.get(bot.voice_clients, guild=voice_channel.guild)
+                
+                if voice_client and voice_client.is_connected():
+                    # Already connected, just play
+                    print(f"[DEBUG] Already connected to voice, playing sound...")
+                    if voice_client.channel != voice_channel:
+                        await voice_client.move_to(voice_channel)
+                else:
+                    # Not connected, connect first
+                    voice_client = await voice_channel.connect()
+                
                 audio_source = discord.FFmpegPCMAudio('du-du-du-duel.mp3')
                 audio_source = discord.PCMVolumeTransformer(audio_source, volume=0.07)
+                
+                # Stop any currently playing audio
+                if voice_client.is_playing():
+                    voice_client.stop()
+                
                 voice_client.play(audio_source)
                 
                 while voice_client.is_playing():
@@ -132,6 +154,16 @@ class DuelView(discord.ui.View):
         self.refused = True
         self.stop()
         await interaction.response.send_message(f"❌ {self.challenged.mention} a refusé le duel, bébé cadum ! 🐔")
+    
+    @discord.ui.button(label="Annuler", style=discord.ButtonStyle.secondary, emoji="🚫")
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.challenger.id:
+            await interaction.response.send_message("Seul le lanceur peut annuler !", ephemeral=True)
+            return
+        
+        self.cancelled = True
+        self.stop()
+        await interaction.response.send_message(f"🚫 {self.challenger.mention} a annulé le duel.")
 
 class RevengeView(discord.ui.View):
     def __init__(self, loser, winner, timeout_minutes, guild):
@@ -160,9 +192,12 @@ class RevengeView(discord.ui.View):
         
         # Send challenge to winner
         accept_view = AcceptRevengeView(self.loser, self.winner)
-        await interaction.followup.send(
+        revenge_msg = await interaction.followup.send(
             f"💀 **{self.loser.mention} demande une REVANCHE !**\n"
-            f"🔥 **Quitte ou Double** : Le perdant prendra **{doubled_timeout} minutes** de timeout !\n"
+            f"🔥 **Quitte ou Double** :\n"
+            f"• Si {self.loser.mention} **perd** → timeout de **{doubled_timeout} minutes** !\n"
+            f"• Si {self.loser.mention} **gagne** → il est libéré, aucune sanction !\n"
+            f"• {self.winner.mention} ne risque **RIEN** !\n\n"
             f"{self.winner.mention}, acceptes-tu ?",
             view=accept_view
         )
@@ -177,8 +212,15 @@ class RevengeView(discord.ui.View):
             if self.winner.id in active_duels:
                 del active_duels[self.winner.id]
             
+            # Delete the revenge request message before starting new game
+            try:
+                await revenge_msg.delete()
+            except:
+                pass
+            
             # Start new duel with doubled timeout (capped)
-            await start_duel_game(interaction, self.loser, self.winner, doubled_timeout, is_revenge=True)
+            # Pass original_loser so only they can be timed out
+            await start_duel_game(interaction, self.loser, self.winner, doubled_timeout, is_revenge=True, original_loser=self.loser)
         else:
             # Revenge refused, apply original timeout
             # Message already sent by the button, just apply timeout
@@ -227,9 +269,14 @@ class AcceptRevengeView(discord.ui.View):
         
         self.accepted = True
         self.stop()
-        await interaction.response.send_message(
+        
+        # Defer the response to avoid interaction timeout
+        await interaction.response.defer()
+        
+        # Send followup message
+        await interaction.followup.send(
             f"✅ **{self.challenged.mention} accepte la revanche !**\n"
-            f"🔥 Le timeout de {self.challenger.mention} est annulé. **NOUVEAU DUEL !**"
+            f"🔥 **NOUVEAU DUEL !**"
         )
     
     @discord.ui.button(label="Refuser", style=discord.ButtonStyle.secondary, emoji="❌")
@@ -299,8 +346,12 @@ def determine_winner(choice1: str, choice2: str) -> int:
     
     return 1 if wins[choice1] == choice2 else 2
 
-async def start_duel_game(interaction, player1, player2, timeout, is_revenge=False):
-    """Main game loop - can be called for initial duel or revenge"""
+async def start_duel_game(interaction, player1, player2, timeout, is_revenge=False, original_loser=None):
+    """Main game loop - can be called for initial duel or revenge
+    
+    Args:
+        original_loser: In revenge mode, indicates who was the original loser (only they can be timed out)
+    """
     
     # Mark players as in duel (only if not already marked)
     if player1.id not in active_duels:
@@ -418,22 +469,32 @@ async def start_duel_game(interaction, player1, player2, timeout, is_revenge=Fal
                 )
                 print(f"[DEBUG] Failed to timeout {loser.name} - missing permissions")
     else:
-        # For revenge matches, timeout immediately (no second chance)
-        try:
-            await loser.timeout(timedelta(minutes=timeout), reason=f"A perdu la revanche contre {winner.display_name}")
+        # For revenge matches, only the original loser can be timed out
+        if winner.id == original_loser.id:
+            # Original loser won the revenge - no one gets timed out!
             await interaction.followup.send(
                 f"🏆 **{winner.mention} GAGNE LA REVANCHE!** 🏆\n\n"
-                f"💀 {loser.mention} a été timeout pour **{timeout} minute(s)**!\n"
-                f"Pas de seconde chance cette fois ! 👋"
+                f"🎉 {winner.mention} s'est racheté ! Personne n'est timeout !\n"
+                f"Respect ! 💪"
             )
-            print(f"[DEBUG] {loser.name} timed out successfully (revenge lost)")
-        except discord.Forbidden:
-            await interaction.followup.send(
-                f"🏆 **{winner.mention} GAGNE LA REVANCHE!** 🏆\n\n"
-                f"⚠️ Mais je peux pas le ban, oupsi {loser.mention}. "
-                f"Faut me mettre les perms"
-            )
-            print(f"[DEBUG] Failed to timeout {loser.name} - missing permissions")
+            print(f"[DEBUG] {winner.name} won revenge - no timeout applied")
+        else:
+            # Original loser lost the revenge - double timeout
+            try:
+                await loser.timeout(timedelta(minutes=timeout), reason=f"A perdu la revanche contre {winner.display_name}")
+                await interaction.followup.send(
+                    f"🏆 **{winner.mention} GAGNE LA REVANCHE!** 🏆\n\n"
+                    f"💀 {loser.mention} a été timeout pour **{timeout} minute(s)**!\n"
+                    f"Pas de seconde chance cette fois ! 👋"
+                )
+                print(f"[DEBUG] {loser.name} timed out successfully (revenge lost)")
+            except discord.Forbidden:
+                await interaction.followup.send(
+                    f"🏆 **{winner.mention} GAGNE LA REVANCHE!** 🏆\n\n"
+                    f"⚠️ Mais je peux pas le ban, oupsi {loser.mention}. "
+                    f"Faut me mettre les perms"
+                )
+                print(f"[DEBUG] Failed to timeout {loser.name} - missing permissions")
     
     # Clean up
     if player1.id in active_duels:
@@ -493,6 +554,13 @@ async def duel(interaction: discord.Interaction, opponent: discord.Member, timeo
     if view.refused:
         print(f"[DEBUG] {opponent.name} refused the duel")
         # Message already sent by the button, don't send another one
+        del active_duels[interaction.user.id]
+        del active_duels[opponent.id]
+        return
+    
+    if view.cancelled:
+        print(f"[DEBUG] {interaction.user.name} cancelled the duel")
+        # Message already sent by the button
         del active_duels[interaction.user.id]
         del active_duels[opponent.id]
         return
