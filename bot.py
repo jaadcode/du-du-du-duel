@@ -86,15 +86,15 @@ class DuelView(discord.ui.View):
         self.accepted = True
         self.stop()
         
-        # Send acceptance message if not already sent
+        # Try to play the duel sound FIRST, before any message
+        await self.play_duel_sound()
+        
+        # THEN send acceptance message
         if self.timeout_minutes <= 120:
             await interaction.response.send_message(f"**DU-DU-DU-DUEL!** {self.challenged.mention} a accepté!", ephemeral=False)
         else:
             # Already responded with confirmation message
             await interaction.followup.send(f"**DU-DU-DU-DUEL!** {self.challenged.mention} a accepté!", ephemeral=False)
-        
-        # Try to play the duel sound if players are in voice
-        await self.play_duel_sound()
     
     async def play_duel_sound(self):
         """Play the duel sound in voice channel"""
