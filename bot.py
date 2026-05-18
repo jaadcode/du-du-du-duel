@@ -86,64 +86,12 @@ class DuelView(discord.ui.View):
         self.accepted = True
         self.stop()
         
-        # Try to play the duel sound FIRST, before any message
-        await self.play_duel_sound()
-        
-        # THEN send acceptance message
+        # Send acceptance message
         if self.timeout_minutes <= 120:
             await interaction.response.send_message(f"**DU-DU-DU-DUEL!** {self.challenged.mention} a accepté!", ephemeral=False)
         else:
             # Already responded with confirmation message
             await interaction.followup.send(f"**DU-DU-DU-DUEL!** {self.challenged.mention} a accepté!", ephemeral=False)
-    
-    async def play_duel_sound(self):
-        """Play the duel sound in voice channel"""
-        try:
-            challenger_voice = self.challenger.voice
-            challenged_voice = self.challenged.voice
-            
-            voice_channel = None
-            if challenger_voice and challenger_voice.channel:
-                voice_channel = challenger_voice.channel
-                print(f"[DEBUG] Challenger is in voice channel: {voice_channel.name}")
-            elif challenged_voice and challenged_voice.channel:
-                voice_channel = challenged_voice.channel
-                print(f"[DEBUG] Challenged is in voice channel: {voice_channel.name}")
-            
-            if voice_channel:
-                print(f"[DEBUG] Attempting to join voice channel and play sound...")
-                
-                # Check if bot is already connected to a voice channel in this guild
-                voice_client = discord.utils.get(bot.voice_clients, guild=voice_channel.guild)
-                
-                if voice_client and voice_client.is_connected():
-                    # Already connected, just play
-                    print(f"[DEBUG] Already connected to voice, playing sound...")
-                    if voice_client.channel != voice_channel:
-                        await voice_client.move_to(voice_channel)
-                else:
-                    # Not connected, connect first
-                    voice_client = await voice_channel.connect()
-                
-                audio_source = discord.FFmpegPCMAudio('du-du-du-duel.mp3')
-                audio_source = discord.PCMVolumeTransformer(audio_source, volume=0.07)
-                
-                # Stop any currently playing audio
-                if voice_client.is_playing():
-                    voice_client.stop()
-                
-                voice_client.play(audio_source)
-                
-                while voice_client.is_playing():
-                    await asyncio.sleep(0.1)
-                
-                await asyncio.sleep(6)
-                await voice_client.disconnect()
-                print(f"[DEBUG] Sound played successfully!")
-            else:
-                print(f"[DEBUG] Neither player is in a voice channel")
-        except Exception as e:
-            print(f"[DEBUG] Error playing sound: {e}")
     
     @discord.ui.button(label="Refuser", style=discord.ButtonStyle.secondary, emoji="❌")
     async def refuse_button(self, interaction: discord.Interaction, button: discord.ui.Button):
