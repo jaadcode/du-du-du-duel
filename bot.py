@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from state import active_duels
 from rps_game import RPSSetupView
 from roulette_game import RouletteSetupView
+from minesweeper_game import MinesweeperSetupView
 
 load_dotenv()
 
@@ -43,6 +44,17 @@ class GameSelectView(discord.ui.View):
             view=RouletteSetupView(interaction.user),
         )
 
+    @discord.ui.button(label="Démineur", style=discord.ButtonStyle.success, emoji="💣")
+    async def minesweeper_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("C'est pas ton /duel !", ephemeral=True)
+            return
+        self.stop()
+        await interaction.response.edit_message(
+            content="**💣 Démineur**\nChoisis ton adversaire :",
+            view=MinesweeperSetupView(interaction.user),
+        )
+
     @discord.ui.button(label="Annuler", style=discord.ButtonStyle.secondary, emoji="🚫")
     async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user.id:
@@ -60,7 +72,7 @@ async def on_ready():
     print('------')
 
 
-@bot.tree.command(name="duel", description="Lance un Pierre-Papier-Ciseaux ou une Roulette Russe !")
+@bot.tree.command(name="duel", description="Lance un duel : PPC, Roulette Russe ou Démineur !")
 async def duel(interaction: discord.Interaction):
     view = GameSelectView(interaction.user)
     await interaction.response.send_message(
