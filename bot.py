@@ -27,13 +27,9 @@ class GameSelectView(discord.ui.View):
             await interaction.response.send_message("C'est pas ton /duel !", ephemeral=True)
             return
         self.stop()
-        setup_view = RPSSetupView(interaction.user)
         await interaction.response.edit_message(
-            content=(
-                "**⚔️ Pierre-Papier-Ciseaux**\n"
-                "Choisis ton adversaire et le timeout, puis lance le duel :"
-            ),
-            view=setup_view
+            content="**⚔️ Pierre-Papier-Ciseaux**\nChoisis ton adversaire :",
+            view=RPSSetupView(interaction.user),
         )
 
     @discord.ui.button(label="Roulette Russe", style=discord.ButtonStyle.danger, emoji="🔫")
@@ -42,14 +38,18 @@ class GameSelectView(discord.ui.View):
             await interaction.response.send_message("C'est pas ton /duel !", ephemeral=True)
             return
         self.stop()
-        setup_view = RouletteSetupView(interaction.user)
         await interaction.response.edit_message(
-            content=(
-                "**🔫 Roulette Russe**\n"
-                "Choisis les joueurs (jusqu'à 5) et le timeout du perdant :"
-            ),
-            view=setup_view
+            content="**🔫 Roulette Russe**\nSélectionne les joueurs :",
+            view=RouletteSetupView(interaction.user),
         )
+
+    @discord.ui.button(label="Annuler", style=discord.ButtonStyle.secondary, emoji="🚫")
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("C'est pas ton /duel !", ephemeral=True)
+            return
+        self.stop()
+        await interaction.response.edit_message(content="*Duel annulé.*", view=None)
 
 
 @bot.event

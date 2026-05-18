@@ -11,9 +11,9 @@ class RouletteJoinView(discord.ui.View):
         self.organizer = organizer
         self.invited_ids = {p.id for p in invited_players}
         self.joined = {organizer.id: organizer}
-        self.message = None
+        self.cancelled = False
 
-    @discord.ui.button(label="Rejoindre la partie", style=discord.ButtonStyle.success, emoji="✅")
+    @discord.ui.button(label="Rejoindre la partie", style=discord.ButtonStyle.success, emoji="✅", row=0)
     async def join_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         uid = interaction.user.id
 
@@ -28,12 +28,23 @@ class RouletteJoinView(discord.ui.View):
         self.joined[uid] = interaction.user
         await interaction.response.send_message(
             f"✅ {interaction.user.mention} a chargé le revolver...",
-            ephemeral=False
+            ephemeral=False,
         )
 
         all_ids = self.invited_ids | {self.organizer.id}
         if set(self.joined.keys()) >= all_ids:
             self.stop()
+
+    @discord.ui.button(label="Annuler", style=discord.ButtonStyle.secondary, emoji="🚫", row=0)
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.organizer.id:
+            await interaction.response.send_message(
+                "Seul l'organisateur peut annuler la partie !", ephemeral=True
+            )
+            return
+        self.cancelled = True
+        self.stop()
+        await interaction.response.send_message("🚫 La Roulette Russe a été annulée.")
 
     async def on_timeout(self):
         self.stop()
@@ -138,19 +149,78 @@ async def start_roulette_game(interaction, organizer, joined: dict, timeout_minu
     print(f"[DEBUG] Russian Roulette done. Victim: {victim.name if victim else 'None'}")
 
 
+class RouletteTimeoutModal(discord.ui.Modal, title="🔫 Timeout du perdant"):
+    timeout_input = discord.ui.TextInput(
+        label="Durée du timeout (1–30 minutes)",
+        placeholder="Ex: 5, 10, 15...",
+        required=True,
+        max_length=2,
+    )
+
+    def __init__(self, organizer, valid_players, setup_message):
+        super().__init__()
+        self.organizer = organizer
+        self.valid_players = valid_players
+        self.setup_message = setup_message
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            timeout_minutes = int(self.timeout_input.value.strip())
+        except ValueError:
+            await interaction.response.send_message(
+                "Le timeout doit être un nombre entier !", ephemeral=True
+            )
+            return
+
+        if not (1 <= timeout_minutes <= 30):
+            await interaction.response.send_message(
+                "Le timeout doit être entre 1 et 30 minutes.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer()
+        try:
+            await self.setup_message.edit(content="🔫 **Roulette Russe en cours...**", view=None)
+        except Exception:
+            pass
+
+        mentions = " ".join(p.mention for p in self.valid_players)
+        join_view = RouletteJoinView(self.organizer, self.valid_players)
+        await interaction.followup.send(
+            f"🔫 **ROULETTE RUSSE !**\n\n"
+            f"{self.organizer.mention} lance une partie de Roulette Russe !\n"
+            f"**Joueurs invités :** {mentions}\n"
+            f"**Timeout du perdant :** {timeout_minutes} minute(s)\n\n"
+            f"Vous avez **60 secondes** pour rejoindre ✅\n"
+            f"*(Les absents ne jouent pas — minimum 2 joueurs pour démarrer)*",
+            view=join_view,
+        )
+
+        await join_view.wait()
+
+        if join_view.cancelled:
+            return
+
+        joined_players = join_view.joined
+        if len(joined_players) < 2:
+            await interaction.followup.send("Pas assez de joueurs (minimum 2). Roulette annulée !")
+            return
+
+        await start_roulette_game(interaction, self.organizer, joined_players, timeout_minutes)
+
+
 class RouletteSetupView(discord.ui.View):
     def __init__(self, organizer):
         super().__init__(timeout=60)
         self.organizer = organizer
         self.players = []
-        self.timeout_minutes = None
 
     @discord.ui.select(
         cls=discord.ui.UserSelect,
         placeholder="Choisir les autres joueurs (1 à 5)...",
         min_values=1,
         max_values=5,
-        row=0
+        row=0,
     )
     async def select_players(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
         if interaction.user.id != self.organizer.id:
@@ -159,27 +229,7 @@ class RouletteSetupView(discord.ui.View):
         self.players = select.values
         await interaction.response.defer()
 
-    @discord.ui.select(
-        placeholder="Choisir le timeout du perdant (1–30 min)...",
-        options=[
-            discord.SelectOption(label="1 minute", value="1"),
-            discord.SelectOption(label="2 minutes", value="2"),
-            discord.SelectOption(label="5 minutes", value="5"),
-            discord.SelectOption(label="10 minutes", value="10"),
-            discord.SelectOption(label="15 minutes", value="15"),
-            discord.SelectOption(label="20 minutes", value="20"),
-            discord.SelectOption(label="30 minutes", value="30"),
-        ],
-        row=1
-    )
-    async def select_timeout(self, interaction: discord.Interaction, select: discord.ui.Select):
-        if interaction.user.id != self.organizer.id:
-            await interaction.response.send_message("C'est pas ta roulette !", ephemeral=True)
-            return
-        self.timeout_minutes = int(select.values[0])
-        await interaction.response.defer()
-
-    @discord.ui.button(label="Lancer la Roulette 🔫", style=discord.ButtonStyle.danger, row=2)
+    @discord.ui.button(label="Lancer la Roulette 🔫", style=discord.ButtonStyle.danger, row=1)
     async def start_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.organizer.id:
             await interaction.response.send_message("C'est pas ta roulette !", ephemeral=True)
@@ -189,12 +239,7 @@ class RouletteSetupView(discord.ui.View):
             await interaction.response.send_message("Choisis au moins un joueur !", ephemeral=True)
             return
 
-        if self.timeout_minutes is None:
-            await interaction.response.send_message("Choisis un timeout d'abord !", ephemeral=True)
-            return
-
         valid_players = [p for p in self.players if not p.bot and p.id != self.organizer.id]
-
         if not valid_players:
             await interaction.response.send_message(
                 "Aucun joueur valide (pas de bots, pas toi-même) !", ephemeral=True
@@ -210,28 +255,6 @@ class RouletteSetupView(discord.ui.View):
                 return
 
         self.stop()
-        await interaction.response.edit_message(content="🔫 **Roulette Russe en cours...**", view=None)
-
-        mentions = " ".join(p.mention for p in valid_players)
-        join_view = RouletteJoinView(self.organizer, valid_players)
-        await interaction.followup.send(
-            f"🔫 **ROULETTE RUSSE !**\n\n"
-            f"{self.organizer.mention} lance une partie de Roulette Russe !\n"
-            f"**Joueurs invités :** {mentions}\n"
-            f"**Timeout du perdant :** {self.timeout_minutes} minute(s)\n\n"
-            f"Vous avez **60 secondes** pour rejoindre ✅\n"
-            f"*(Les absents ne jouent pas — minimum 2 joueurs pour démarrer)*",
-            view=join_view
+        await interaction.response.send_modal(
+            RouletteTimeoutModal(self.organizer, valid_players, interaction.message)
         )
-
-        await join_view.wait()
-
-        joined_players = join_view.joined
-
-        if len(joined_players) < 2:
-            await interaction.followup.send(
-                "Pas assez de joueurs (minimum 2). Roulette annulée !"
-            )
-            return
-
-        await start_roulette_game(interaction, self.organizer, joined_players, self.timeout_minutes)

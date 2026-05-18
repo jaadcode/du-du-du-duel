@@ -433,19 +433,55 @@ async def start_rps_challenge(interaction, challenger, opponent, timeout_minutes
     await start_duel_game(interaction, challenger, opponent, timeout_minutes, is_revenge=False)
 
 
+class RPSTimeoutModal(discord.ui.Modal, title="⚔️ Durée du timeout"):
+    timeout_input = discord.ui.TextInput(
+        label="Durée du timeout (en minutes)",
+        placeholder="Ex: 5, 10, 60...  (max 10080 = 1 semaine)",
+        required=True,
+        max_length=5,
+    )
+
+    def __init__(self, organizer, opponent, setup_message):
+        super().__init__()
+        self.organizer = organizer
+        self.opponent = opponent
+        self.setup_message = setup_message
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            timeout_minutes = int(self.timeout_input.value.strip())
+        except ValueError:
+            await interaction.response.send_message(
+                "Le timeout doit être un nombre entier !", ephemeral=True
+            )
+            return
+
+        if not (1 <= timeout_minutes <= 10080):
+            await interaction.response.send_message(
+                "Le timeout doit être entre 1 et 10080 minutes (1 semaine max).", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer()
+        try:
+            await self.setup_message.edit(content="⚔️ **Duel en cours...**", view=None)
+        except Exception:
+            pass
+        await start_rps_challenge(interaction, self.organizer, self.opponent, timeout_minutes)
+
+
 class RPSSetupView(discord.ui.View):
     def __init__(self, organizer):
         super().__init__(timeout=60)
         self.organizer = organizer
         self.opponent = None
-        self.timeout_minutes = None
 
     @discord.ui.select(
         cls=discord.ui.UserSelect,
         placeholder="Choisir un adversaire...",
         min_values=1,
         max_values=1,
-        row=0
+        row=0,
     )
     async def select_opponent(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
         if interaction.user.id != self.organizer.id:
@@ -454,28 +490,7 @@ class RPSSetupView(discord.ui.View):
         self.opponent = select.values[0]
         await interaction.response.defer()
 
-    @discord.ui.select(
-        placeholder="Choisir la durée du timeout...",
-        options=[
-            discord.SelectOption(label="1 minute", value="1"),
-            discord.SelectOption(label="5 minutes", value="5"),
-            discord.SelectOption(label="10 minutes", value="10"),
-            discord.SelectOption(label="30 minutes", value="30"),
-            discord.SelectOption(label="1 heure", value="60"),
-            discord.SelectOption(label="2 heures", value="120"),
-            discord.SelectOption(label="1 jour", value="1440"),
-            discord.SelectOption(label="1 semaine", value="10080"),
-        ],
-        row=1
-    )
-    async def select_timeout(self, interaction: discord.Interaction, select: discord.ui.Select):
-        if interaction.user.id != self.organizer.id:
-            await interaction.response.send_message("C'est pas ton duel !", ephemeral=True)
-            return
-        self.timeout_minutes = int(select.values[0])
-        await interaction.response.defer()
-
-    @discord.ui.button(label="Lancer le duel ⚔️", style=discord.ButtonStyle.danger, row=2)
+    @discord.ui.button(label="Lancer le duel ⚔️", style=discord.ButtonStyle.danger, row=1)
     async def start_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.organizer.id:
             await interaction.response.send_message("C'est pas ton duel !", ephemeral=True)
@@ -483,10 +498,6 @@ class RPSSetupView(discord.ui.View):
 
         if self.opponent is None:
             await interaction.response.send_message("Choisis un adversaire d'abord !", ephemeral=True)
-            return
-
-        if self.timeout_minutes is None:
-            await interaction.response.send_message("Choisis un timeout d'abord !", ephemeral=True)
             return
 
         if self.opponent.id == self.organizer.id:
@@ -498,5 +509,6 @@ class RPSSetupView(discord.ui.View):
             return
 
         self.stop()
-        await interaction.response.edit_message(content="⚔️ **Duel en cours...**", view=None)
-        await start_rps_challenge(interaction, self.organizer, self.opponent, self.timeout_minutes)
+        await interaction.response.send_modal(
+            RPSTimeoutModal(self.organizer, self.opponent, interaction.message)
+        )
